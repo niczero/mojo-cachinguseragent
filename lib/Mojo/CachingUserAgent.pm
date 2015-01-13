@@ -1,11 +1,10 @@
 package Mojo::CachingUserAgent;
 use Mojo::Base 'Mojo::UserAgent';
 
-our $VERSION = 0.001;
+our $VERSION = 0.002;
 
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
-use Mojar::Util 'dumper';
 use Mojo::Util qw(slurp spurt);
 
 # Attributes
@@ -37,11 +36,9 @@ sub get_body {
   my $cache_dir = $self->cache_dir;
   my $cache = $cache_dir ? catfile $cache_dir, encode_base64url $url : undef;
   if ($cache and -f $cache) {
-    # Check cache
-    if (-f $page_cache) {
-      $self->log->debug("Fetching page $url from cache");
-      return slurp $page_cache;
-    }
+    # Use cache
+    $self->log->debug("Fetching page $url from cache");
+    return slurp $cache;
   }
 
   $headers->{Referer} = $self->{referer} if $self->referer;
