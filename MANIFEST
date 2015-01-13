@@ -1,0 +1,11 @@
+Changes
+LICENSE
+Makefile.PL
+MANIFEST
+MANIFEST.SKIP
+README.md
+lib/Mojo/CachingUserAgent.pm
+test/00-load.t
+test/manifest.t
+test/pod.t
+test/version.t
