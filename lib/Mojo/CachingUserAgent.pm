@@ -1,11 +1,12 @@
 package Mojo::CachingUserAgent;
 use Mojo::Base 'Mojo::UserAgent';
 
-our $VERSION = 0.002;
+our $VERSION = 0.011;
 
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
 use Mojo::Util qw(slurp spurt);
+use Mojo::Log;
 
 # Attributes
 
@@ -46,7 +47,7 @@ sub get_body {
   if (my $err = $tx->error) {
     $self->log->info("Fetching page $url");
     $self->log->error(sprintf 'Failure for %s\nGot response %u: %s',
-        $url, @$err{'advice', 'message'});
+        $url, ($err->{code} || 418), $err->{message});
     $self->on_error->($err);
   }
   my $body = $tx->res->body;

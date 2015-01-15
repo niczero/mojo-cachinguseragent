@@ -1,2 +1,6 @@
+0.011 2015-01-15
+  * Updated usage of 'advice' -> 'code'.
+  * Added missing Mojo::Log dependency.
+
 0.002 2015-01-13
   * Initial bundling.
