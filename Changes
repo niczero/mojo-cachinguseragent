@@ -1,6 +1,10 @@
+0.021 2015-10-17
+  - Add asynchronicity.
+  - Add dom/json selectors.
+
 0.011 2015-01-15
-  * Updated usage of 'advice' -> 'code'.
-  * Added missing Mojo::Log dependency.
+  - Update usage of 'advice' -> 'code'.
+  - Add missing Mojo::Log dependency.
 
 0.002 2015-01-13
-  * Initial bundling.
+  - Initial bundling.

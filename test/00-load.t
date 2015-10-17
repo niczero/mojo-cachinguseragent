@@ -2,7 +2,7 @@ use Mojo::Base -strict;
 use Test::More;
 
 use_ok 'Mojo::CachingUserAgent';
-diag "Testing Mojo::CachingUserAgent $Mojo::CachingUserAgent::VERSION, Perl $],
-$^X";
+diag sprintf 'Testing Mojo::CachingUserAgent %s, Perl %s, %s',
+    $Mojo::CachingUserAgent::VERSION, $], $^X;
 
 done_testing();

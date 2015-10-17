@@ -7,7 +7,7 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
   NAME         => 'Mojo::CachingUserAgent',
   VERSION_FROM => 'lib/Mojo/CachingUserAgent.pm',
-  ABSTRACT     => 'A useragent that caches pages',
+  ABSTRACT     => 'An async useragent that can cache pages',
   AUTHOR       => 'Nic Sandfield <niczero@cpan.org>',
   LICENSE      => 'artistic_2',
   META_MERGE   => {
@@ -22,7 +22,7 @@ WriteMakefile(
   BUILD_REQUIRES => {'Test::More' => 0},
   CONFIGURE_REQUIRES => {'ExtUtils::MakeMaker' => 6.3},
   PREREQ_PM => {
-    Mojolicious => 5
+    Mojolicious => 5.8
   },
   EXE_FILES => [],
   test => {TESTS => 'test/*.t'}
