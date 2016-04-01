@@ -1,5 +1,5 @@
 # ============
-# remote.t
+# httpbin.t
 # ============
 use Mojo::Base -strict;
 use Test::More;
@@ -10,8 +10,7 @@ use Mojo::CachingUserAgent;
 use Mojo::Log;
 use Mojo::Util 'dumper';
 
-plan skip_all => 'set TEST_ACCESS to enable this test (developer only!)'
-  unless $ENV{TEST_ACCESS};
+plan skip_all => 'set TEST_ACCESS to enable this test' unless $ENV{TEST_ACCESS};
 
 my $dir = tempdir CLEANUP => 1;
 my $ua = Mojo::CachingUserAgent->new(
@@ -23,37 +22,38 @@ my $url = 'http://httpbin.org';
 
 subtest q{Body} => sub {
   my $body;
-  ok $body = $ua->get_body($url), 'got something';
+  ok $body = $ua->body_from_get($url), 'got something';
   ok $body =~ /\bENDPOINTS\b/, 'expected content';
+# TODO: Show cache contains a non-empty file
 };
 
 subtest q{DOM} => sub {
   my $dom;
   $ua->on_error(sub { die pop });
-  ok $dom = $ua->get_dom($url), 'got something';
+  ok $dom = $ua->dom_from_get($url), 'got something';
   my $length = length($dom->to_string);
 
-  ok $dom = $ua->get_dom($url, '#AUTHOR'), 'result via selector';
+  ok $dom = $ua->dom_from_get($url, '#AUTHOR'), 'result via selector';
   ok length($dom->to_string) < $length, 'shorter';
 
-  is $ua->get_dom($url, '#NOTTHERE'), undef, 'missing sub-dom';
+  is $ua->dom_from_get($url, '#NOTTHERE'), undef, 'missing sub-dom';
 };
 
 subtest q{JSON} => sub {
   my $json;
-  ok $json = $ua->get_json("$url/ip"), 'got something';
+  ok $json = $ua->json_from_get("$url/ip"), 'got something';
   is ref($json), 'HASH', 'hashref';
 
-  ok $json = $ua->get_json("$url/ip", '/origin'), 'result via pointer';
+  ok $json = $ua->json_from_get("$url/ip", '/origin'), 'result via pointer';
   ok !ref($json), 'scalar';
 
-  is $ua->get_json("$url/ip", '/notthere'), undef, 'missing sub-json';
+  is $ua->json_from_get("$url/ip", '/notthere'), undef, 'missing sub-json';
 };
 
 subtest q{Body async} => sub {
   my $body;
   my $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_body($url, sub { $body = $_[2] });
+    $ua->body_from_get($url, sub { $body = $_[2] });
   });
   ok !$body, 'no body yet';
   $delay->wait;
@@ -64,7 +64,7 @@ subtest q{Body async} => sub {
 subtest q{DOM async} => sub {
   my $dom;
   my $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_dom($url, sub { $dom = $_[2] });
+    $ua->dom_from_get($url, sub { $dom = $_[2] });
   });
   ok !$dom, 'no dom yet';
   $delay->wait;
@@ -73,7 +73,7 @@ subtest q{DOM async} => sub {
 
   undef $dom;
   $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_dom($url, '#AUTHOR', sub { $dom = $_[2] });
+    $ua->dom_from_get($url, '#AUTHOR', sub { $dom = $_[2] });
   });
   ok !$dom, 'no dom again';
   $delay->wait;
@@ -82,7 +82,7 @@ subtest q{DOM async} => sub {
 
   undef $dom;
   Mojo::IOLoop->delay(sub {
-    $ua->get_dom($url, '#NOTTHERE', sub { $dom = $_[2] });
+    $ua->dom_from_get($url, '#NOTTHERE', sub { $dom = $_[2] });
   })->wait;
   is $dom, undef, 'missing sub-dom';
 };
@@ -90,7 +90,7 @@ subtest q{DOM async} => sub {
 subtest q{JSON async} => sub {
   my $json;
   my $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_json("$url/ip", sub { $json = $_[2] });
+    $ua->json_from_get("$url/ip", sub { $json = $_[2] });
   });
   ok !$json, 'no json yet';
   $delay->wait;
@@ -99,7 +99,7 @@ subtest q{JSON async} => sub {
 
   undef $json;
   $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_json("$url/ip", '/origin', sub { $json = $_[2] });
+    $ua->json_from_get("$url/ip", '/origin', sub { $json = $_[2] });
   });
   ok !$json, 'no json again';
   $delay->wait;
@@ -108,7 +108,7 @@ subtest q{JSON async} => sub {
 
   undef $json;
   $delay = Mojo::IOLoop->delay(sub {
-    $ua->get_json("$url/ip", '/notthere', sub { $json = $_[2] });
+    $ua->json_from_get("$url/ip", '/notthere', sub { $json = $_[2] });
   })->wait;
   is $json, undef, 'missing sub-json';
 };

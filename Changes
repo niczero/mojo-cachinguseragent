@@ -1,3 +1,9 @@
+0.031 2016-04-01
+  - Rename methods (get_* -> *_from_get).
+  - Add body_from & head_from.
+  - Add {body,dom,json,head}_from_post.
+  - Add head_from_head.
+
 0.021 2015-10-17
   - Add asynchronicity.
   - Add dom/json selectors.

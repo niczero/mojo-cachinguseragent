@@ -1,7 +1,7 @@
 package Mojo::CachingUserAgent;
 use Mojo::Base 'Mojo::UserAgent';
 
-our $VERSION = 0.021;
+our $VERSION = 0.031;
 
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
@@ -9,7 +9,7 @@ use Mojo::IOLoop;
 use Mojo::JSON 'decode_json';
 use Mojo::JSON::Pointer;
 use Mojo::Log;
-use Mojo::Util qw(slurp spurt);
+use Mojo::Util qw(decode encode slurp spurt);
 
 # Attributes
 
@@ -32,8 +32,25 @@ sub new {
   return $self;
 }
 
-sub get_body {
-  my ($self, $url) = (shift, shift);
+sub get_body       { shift->body_from('GET', @_) }  # legacy, deprecated
+sub body_from_get  { shift->body_from('GET', @_) }
+sub body_from_post { shift->body_from('POST', @_) }
+
+sub get_dom        { shift->dom_from('GET', @_) }  # legacy, deprecated
+sub dom_from_get   { shift->dom_from('GET', @_) }
+sub dom_from_post  { shift->dom_from('POST', @_) }
+
+sub get_json       { shift->json_from('GET', @_) }  # legacy, deprecated
+sub json_from_get  { shift->json_from('GET', @_) }
+sub json_from_post { shift->json_from('POST', @_) }
+
+sub head_from_get  { shift->head_from('GET', @_) }
+sub head_from_post { shift->head_from('POST', @_) }
+
+sub head_from_head { shift->head_from('HEAD', @_) }
+
+sub body_from {
+  my ($self, $method, $url) = (shift, shift, shift);
   my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
   my $headers = (ref $_[0] eq 'HASH') ? shift : {};
 
@@ -44,7 +61,7 @@ sub get_body {
   if ($cache and -f $cache) {
     # Use cache
     $log->debug("Using cached $url");
-    my $body = slurp $cache;
+    my $body = decode 'UTF-8', slurp $cache;
     return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $body) })
         : $body;
   }
@@ -54,7 +71,7 @@ sub get_body {
     if not exists $headers->{Referer} and $self->referer;
 
   $log->debug("Fetching $url");
-  my $tx = $self->build_tx('GET', $url, $headers, @_);
+  my $tx = $self->build_tx(uc($method), $url, $headers, @_);
 
   # blocking
   unless ($cb) {
@@ -67,7 +84,7 @@ sub get_body {
     )->wait;
     return if $error;
 
-    spurt $body => $cache if $cache;
+    spurt encode('UTF-8', $body) => $cache if $cache;
     $self->referer($url) if $self->chain_referer;
     return $body;
   }
@@ -78,7 +95,7 @@ sub get_body {
     my ($error, $body);
     unless ($error = $self->_handle_error($tx_, $url)) {
       $body = $tx_->res->body;
-      spurt $body => $cache if $cache;
+      spurt encode('UTF-8', $body) => $cache if $cache;
       $self->referer($url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
@@ -87,8 +104,65 @@ sub get_body {
   return;
 }
 
-sub get_dom {
-  my $self = shift;
+sub head_from {
+  my ($self, $method, $url) = (shift, shift, shift);
+  my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
+  my $headers = (ref $_[0] eq 'HASH') ? shift : {};
+
+  my $cache_dir = $self->cache_dir;
+  my $cache = $cache_dir
+      ? catfile $cache_dir, encode_base64url($url .':HEAD') : undef;
+  my $log = $self->log;
+
+  if ($cache and -f $cache) {
+    # Use cache
+    $log->debug("Using cached $url");
+    my $head = Mojo::Headers->new->parse(decode 'UTF-8', slurp $cache);
+    return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $head) })
+        : $head;
+  }
+  # Not using cache => fetch
+
+  $headers->{Referer} = $self->referer
+    if not exists $headers->{Referer} and $self->referer;
+
+  $log->debug("Fetching head $url");
+  my $tx = $self->build_tx(uc($method), $url, $headers, @_);
+
+  # blocking
+  unless ($cb) {
+    my ($error, $head);
+    Mojo::IOLoop->delay(
+      sub { $self->start($tx, shift->begin) },
+      sub {
+        $error = $self->_handle_error($tx, $url);
+        $head = $tx->res->headers;
+      }
+    )->wait;
+    return $head if $error;
+
+    spurt encode('UTF-8', $head->to_string ."\n") => $cache if $cache;
+    $self->referer($url) if $self->chain_referer;
+    return $head;
+  }
+
+  # non-blocking
+  $self->start($tx, sub {
+    my ($ua, $tx_) = @_;
+    my ($error, $head);
+    unless ($error = $self->_handle_error($tx_, $url)) {
+      $head = $tx_->res->headers;
+      spurt encode('UTF-8', $head->to_string ."\n") => $cache if $cache;
+      $self->referer($url) if $self->chain_referer;
+      # ^interesting race condition when concurrent
+    }
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $head) });
+  });
+  return;
+}
+
+sub dom_from {
+  my ($self, $method) = (shift, shift);
   my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
   my $selector = pop if @_ >= 2 and not ref $_[-1];
   my @args = @_;
@@ -97,7 +171,7 @@ sub get_dom {
   unless ($cb) {
     my ($error, $dom);
     Mojo::IOLoop->delay(
-      sub { $self->get_body(@args, shift->begin) },
+      sub { $self->body_from($method, @args, shift->begin) },
       sub {
         my ($delay, $e, $body) = @_;
         $dom = Mojo::DOM->new($body) unless $error = $e;
@@ -108,7 +182,7 @@ sub get_dom {
   }
 
   # non-blocking
-  $self->get_body(@args, sub {
+  $self->body_from($method, @args, sub {
     my ($ua, $error, $body) = @_;
     my $dom;
     unless ($error) {
@@ -120,8 +194,8 @@ sub get_dom {
   return;
 }
 
-sub get_json {
-  my $self = shift;
+sub json_from {
+  my ($self, $method) = (shift, shift);
   my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
   my $pointer = pop if @_ >= 2 and not ref $_[-1];
   my @args = @_;
@@ -130,7 +204,7 @@ sub get_json {
   unless ($cb) {
     my ($error, $json);
     Mojo::IOLoop->delay(
-      sub { $self->get_body(@args, shift->begin) },
+      sub { $self->body_from($method, @args, shift->begin) },
       sub {
         my ($delay, $e, $body) = @_;
         $json = decode_json($body) unless $error = $e;
@@ -141,7 +215,7 @@ sub get_json {
   }
 
   # non-blocking
-  $self->get_body(@args, sub {
+  $self->body_from($method, @args, sub {
     my ($ua, $error, $body) = @_;
     my $json;
     unless ($error) {
@@ -164,9 +238,8 @@ sub _handle_error {
   }
 }
 
-#TODO: Support bot directives
-#TODO: Support no-cache
 #TODO: Extend 'get'
+#TODO: Only cache 'GET'
 
 1;
 __END__
@@ -179,9 +252,13 @@ Mojo::CachingUserAgent - Caching user agent
 
   use Mojo::CachingUserAgent;
   $ua = Mojo::CachingUserAgent->new(cache_dir => '/var/tmp/mycache');
-  $author = $ua->get_json('http://example.com/digest', '/author/0');
-  $html = $ua->get_body('http://example.com/index');
-  $footer = $ua->get_dom('http://example.com')->at('div#footer')->to_string;
+  $author = $ua->json_from_get('http://example.com/digest', '/author/0');
+  $html   = $ua->body_from_get('http://example.com/index');
+  $footer = $ua->dom_from_get('http://example.com')->at('div#footer')->to_string;
+  $auth   = $ua->head_from_post('https://api.example.com/session', json => {
+    username => 'me',
+    token => '98tb/3+s2.001'
+  });
 
   $ua = Mojo::CachingUserAgent->new(
     cache_dir => '/var/tmp/cache',
@@ -195,24 +272,35 @@ Mojo::CachingUserAgent - Caching user agent
 =head1 DESCRIPTION
 
 A modest extension of L<Mojo::UserAgent> with convenience wrapper methods around
-the 'GET' method.  The extended object makes it easier to (a) set a C<Referer>
+'GET' and friends.  The extended object makes it easier to (a) set a C<Referer>
 URL, (b) set an agent 'type' name, and (c) cache results.  When using
-C<Referer>, calls via C<get> (C<get_*>) can either (a1) use a common Referer or
-(a2) use the URL of the previous 'GET'.
+C<Referer>, calls can either (a1) use a common Referer or (a2) use the URL of
+the previous invocation.
 
 Note that the L<get|Mojo::UserAgent/get> method itself is left untouched.
 
 =head1 USAGE
 
-This module is for developers who want either C<body>, C<dom>, or C<json> from a
-page, without headers; otherwise you are better using the parent module
-L<Mojo::UserAgent>.  If you need headers or you have another reason for calling
-C<get> or C<build_tx>, you still can, but this module makes no change to those
-calls.
+This module is for developers who want either C<body>, C<dom>, C<json>, or
+C<head> from a page, but not a combination; otherwise you are better using the
+parent module L<Mojo::UserAgent>.  If you have a reason for calling the pure
+methods (C<get> et al) or C<build_tx>, you still can, but this module makes no
+change to those calls.
 
-This module will happily use its cache (if set) for all 'GET' retrievals
-(C<get_*>).  If you want some cached and some not cached, create a separate
-instance without a C<cache_dir> defined.
+This module will happily use its cache (if set) whenever it can.  If you want
+some cached and some not cached, create a separate instance without a
+C<cache_dir> defined.  (Only 'GET' requests use the cache, of course.)
+
+The usage dictates a boringly simple approach: if caching is enabled and the URL
+is in the cache, return the cached content (head or body).  When checking the
+URL, query params are taken into account, but headers are not.  You can think of
+it like wget with --no-clobber.
+
+If you want a proper (managed) cache, look at L<Mojo::Cache> or the L<CHI>
+module.  If you want proper http caching (eg respecting validity periods and
+no-cache) then look elsewhere.  If you are looking for something to mock an API
+for unit testing, again this module won't satisfy those needs; for example it
+cannot play back failure cases.
 
 =head2 Rapid Prototyping
 
@@ -226,7 +314,9 @@ a web page, or an error.
 
 =head2 Web Scraping
 
-If you are scraping a static site, no sense to download a page more than once.  Be polite and set a meaningful C<name>.  Unfortunately the module doesn't currently help you respect 'bot' directives.
+If you are scraping a static site, no sense to download a page more than once.
+Be polite and set a meaningful C<name>.  Unfortunately the module doesn't
+currently help you respect 'bot' directives.
 
 =head2 Concurrent Requests
 
@@ -259,11 +349,11 @@ Attributes are typically defined at creation time.
 
   $ua = Mojo::CachingUserAgent->new(cache_dir => '/var/tmp', ...);
 
-The directory in which to cache page bodies.  The filenames are filesystem-safe
-base64 (ie using C<-> and C<_>) of the URL.  If this attribute is left
-undefined, no caching is done by that agent.  The cache is based on the entire
-URL (as a literal string) so if URL attributes change or appear in a different
-order, a separate file is cached.
+The directory in which to cache pages.  The filenames are filesystem-safe base64
+(ie using C<-> and C<_>) of the URL.  If this attribute is left undefined, no
+caching is done by that agent.  The cache is based on the entire URL (as a
+literal string) so if URL attributes change or appear in a different order, a
+separate file is cached.
 
 The job of removing old pages from the cache is left to you.  Currently there is
 no plan to implement any inspection of page headers to control caching; caching
@@ -331,49 +421,55 @@ retrieval within that agent.
 
 =head1 METHODS
 
-=head2 get_body
+=head2 body_from_get
 
-  $body = $ua->get_body('http://mojolicio.us');
-  $body = $ua->get_body('http://ab.ie/x2', {Referer => 'http://ab.ie'}, sub {
+  $body = $ua->body_from_get('http://mojolicio.us');
+  $body = $ua->body_from_get('http://ab.ie/x2', {Referer => 'http://ab.ie'}, sub {
     my ($agent, $error, $body) = @_;
   });
 
-Get page body.  The hashref of headers to use in the request is optional, as is
-the callback for asynchronous use.  Uses the agent's cache if one has been set
-up.
+Return the result body from a 'GET' request.  The hashref of headers to use in
+the request is optional, as is the callback for asynchronous use.  Uses the
+agent's cache if one has been set up.
 
-=head2 get_dom
+=head2 dom_from_get
 
-  $dom = $ua->get_dom('http://perl.com');
-  $dom = $ua->get_dom('http://perl.com', '#index');
-  $dom = $ua->get_dom('http://perl.com', $headers, '#index', sub {
+  $dom = $ua->dom_from_get('http://perl.com');
+  $dom = $ua->dom_from_get('http://perl.com', '#index');
+  $dom = $ua->dom_from_get('http://perl.com', $headers, '#index', sub {
     my ($agent, $error, $dom) = @_;
   });
 
-Get page DOM (see L<Mojo::DOM>).  The hashref of headers to use in the request
-is optional, as are the CSS selector and the callback (for asynchronous use).
-If a selector is given, it returns the DOM from the first found match,
-otherwise C<undef>.  In the case of retrieval failure, C<$error> is the
-resulting message.  Uses the agent's cache if one has been set up.
+Return page DOM (see L<Mojo::DOM>) from a 'GET' request.  The hashref of headers
+to use in the request is optional, as are the CSS selector and the callback (for
+asynchronous use).  If a selector is given, it returns the DOM from the first
+found match, otherwise C<undef>.  In the case of retrieval failure, C<$error> is
+the resulting message.  Uses the agent's cache if one has been set up.
 
 If both C<$error> and C<$dom> are undefined, it means the agent succeeded in
 retrieving nothing, most likely due to a selector not matching anything.
 
-=head2 get_json
+=head2 json_from_get
 
-  $json = $ua->get_json('http://httpbin.org/ip');
-  $json = $ua->get_json('http://httpbin.org/ip', '/origin');
-  $json = $ua->get_json('http://httpbin.org/ip', $headers, '/origin', sub {
+  $json = $ua->json_from_get('http://httpbin.org/ip');
+  $json = $ua->json_from_get('http://httpbin.org/ip', '/origin');
+  $json = $ua->json_from_get('http://httpbin.org/ip', $headers, '/origin', sub {
     my ($agent, $error, $json) = @_;
   });
 
-Get JSON (see L<Mojo::JSON>).  The hashref of headers to use in the request is
-optional, as are the JSON pointer and the callback (for asynchronous use).  If a
-pointer is given, it returns the JSON structure matching that path, otherwise
-C<undef>.  Uses the agent's cache if one has been set up.
+Return JSON (see L<Mojo::JSON>) from a 'GET' request.  The hashref of headers to
+use in the request is optional, as are the JSON pointer and the callback (for
+asynchronous use).  If a pointer is given, it returns the JSON structure
+matching that path, otherwise C<undef>.  Uses the agent's cache if one has been
+set up.
 
 If both C<$error> and C<$json> are undefined, it means the agent succeeded in
 retrieving nothing, most likely due to a pointer not matching anything.
+
+=head2 body_from_post
+=head2 dom_from_post
+=head2 json_from_post
+=head2 head_from_head
 
 =head1 SEE ALSO
 
