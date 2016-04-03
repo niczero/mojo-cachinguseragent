@@ -1,3 +1,6 @@
+0.041 2016-04-04
+  - Add cookie file support.
+
 0.031 2016-04-01
   - Rename methods (get_* -> *_from_get).
   - Add body_from & head_from.

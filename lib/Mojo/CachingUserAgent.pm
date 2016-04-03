@@ -1,21 +1,23 @@
 package Mojo::CachingUserAgent;
 use Mojo::Base 'Mojo::UserAgent';
 
-our $VERSION = 0.031;
+our $VERSION = 0.041;
 
+use Carp 'croak';
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
 use Mojo::IOLoop;
 use Mojo::JSON 'decode_json';
 use Mojo::JSON::Pointer;
 use Mojo::Log;
-use Mojo::Util qw(decode encode slurp spurt);
+use Mojo::Util qw(decode encode slurp spurt dumper);
+use Scalar::Util 'blessed';
 
 # Attributes
 
 has 'cache_dir';
 has chain_referer => 0;
-has 'cookie_dir';
+has 'cookie_file';
 has log => sub { Mojo::Log->new };
 has 'name';
 has on_error => sub { sub { my ($ua, $loop, $msg) = @_; $ua->log->error($msg) }};
@@ -29,7 +31,72 @@ sub new {
   my $self = shift->SUPER::new(max_redirects => 3, inactivity_timeout => 30,
       %param);
   $self->transactor->name($self->{name} = $name) if defined $name;
+  $self->load_cookies if $self->cookie_file;
   return $self;
+}
+
+sub load_cookies {
+  my ($self, $domain) = @_;
+  croak 'No path from which to load' unless my $file = $self->cookie_file;
+  croak "Cannot read cookie file ($file)" unless -r $file;
+  my $content = decode 'UTF-8', slurp $file;
+  $self->import_cookies(\$content, $domain);
+}
+
+sub save_cookies {
+  my ($self) = @_;
+  croak 'No path to which to save' unless my $file = $self->cookie_file;
+  croak "Cannot write cookie file ($file)" unless -w $file;
+  spurt encode('UTF-8', ${$self->export_cookies($self->cookie_jar->all)})
+      => $file;
+  return $self;
+}
+
+sub import_cookies {
+  my ($self, $content, $domain) = @_;
+  croak 'Missing content ref' unless ref $content;
+  my $jar = $self->cookie_jar;
+  my $cookies = [];
+  defined($_ = $self->parse_cookie($_)) and $jar->add($_) for $$content =~ /^.*$/mg;
+  return $self;
+}
+
+sub export_cookies {
+  my ($self, $cookies) = @_;
+  my $content = '';
+  defined($_ = $self->format_cookie($_)) and $content .= $_ for @$cookies;
+  return \$content;
+}
+
+sub parse_cookie {
+  my ($self, $text) = @_;
+  $text //= '';
+  return undef unless length $text and $text !~ /^#/;
+
+  return Mojo::Cookie::Response->new(
+    domain => $1,
+    all_machines => (uc($2) =~ /^YES|ON|1$/),
+    path => $3,
+    secure => (uc($4) =~ /^YES|ON|1$/),
+    expires => $5,
+    name => $6,
+    value => $7
+  ) if $text =~ /^(\S+)\s+([A-Z]+)\s+(\S+)\s+([A-Z]+)\s+(\d+)\s+(\w+)\s+(.*)/;
+  croak "Unrecognised cookie line:\n($text)";
+}
+
+sub format_cookie {
+  my ($self, $cookie) = @_;
+  return undef unless blessed $cookie;
+  my $domain = $cookie->domain // $cookie->origin or return;
+  return sprintf "%s\t%s\t%s\t%s\t%u\t%s\t%s\n",
+      $domain,
+      $cookie->{all_machines} // ($domain =~ /^\./) ? 'YES' : 'NO',
+      $cookie->path // '/',
+      $cookie->secure ? 'YES' : 'NO',
+      $cookie->expires // 0,
+      $cookie->name,
+      $cookie->value;
 }
 
 sub get_body       { shift->body_from('GET', @_) }  # legacy, deprecated
@@ -262,6 +329,7 @@ Mojo::CachingUserAgent - Caching user agent
 
   $ua = Mojo::CachingUserAgent->new(
     cache_dir => '/var/tmp/cache',
+    cookie_file => '/var/tmp/cookies.txt',
     chain_referer => 1,
     log => $my_log,
     name => 'Scraperbot/1.0 (+http://myspace.com/inquisitor)',
@@ -336,7 +404,7 @@ can catch the exception (unless you want to ignore errors of course).
 
 All attributes return the invocant when used as setters, so are chainable.
 
-  $ua->cache_dir('/tmp')->cookie_dir('/home/me/.cookies')->...
+  $ua->cache_dir('/tmp')->cookie_file('/home/me/.cookies.txt')->...
 
 Attributes are typically defined at creation time.
 
@@ -367,13 +435,13 @@ Whether each URL fetched should become the C<Referer> [sic] of the subsequent
 fetch.  Defaults to false, meaning any original referrer defined will be the
 C<Referer> of all subsequent fetches.
 
-=head2 cookie_dir
+=head2 cookie_file
 
-  $ua->cookie_dir($home->rel_dir('data/cookies'));
-  $dir = $ua->cookie_dir;
+  $ua->cookie_file($home->rel_file('data/cookies.txt'));
+  $filename = $ua->cookie_file;
 
-Where to store cookies between invocations.  If left undefined, cookies are lost
-between runs.
+Where to store cookies between invocations.  If left undefined, cookies are
+discarded between runs.
 
 =head2 log
 
