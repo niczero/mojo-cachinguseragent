@@ -10,11 +10,11 @@ use Mojo::CachingUserAgent;
 use Mojo::Log;
 use Mojo::Util 'dumper';
 
-plan skip_all => 'set TEST_ACCESS to enable this test' unless $ENV{TEST_ACCESS};
+plan skip_all => 'set TEST_ONLINE to enable this test' unless $ENV{TEST_ONLINE};
 
-my $dir = tempdir CLEANUP => 1;
+my $dir = tempdir CLEANUP => 1, EXLOCK => 0;
 my $ua = Mojo::CachingUserAgent->new(
-  cache_dir => '/tmp/x',
+  cache_dir => $dir,
   on_error => sub {},
   log => Mojo::Log->new(path => catfile $dir, 'test.log')
 );
@@ -45,24 +45,27 @@ $url = 'http://api.geonames.org/postalCodeSearch?postalcode=LS42DD&country=GB&us
 subtest q{dom_from_get} => sub {
   my $dom;
   ok $dom = $ua->dom_from_get($url), 'got something';
-  ok $dom = $ua->dom_from_get($url, 'geonames code adminCode1')->text, 'got value';
-  is $dom, 'ENG', 'expected value';
+  $dom = $ua->dom_from_get($url, 'geonames code adminCode1');
+  if ($dom) {
+    ok $dom, 'got value';
+    is $dom->text, 'ENG', 'expected value';
+  }
+  else {
+    ok $dom = $ua->dom_from_get($url, 'geonames status'), 'got error value';
+    like $dom->{message}, qr/^the hourly limit /, 'expected value';
+  }
 };
 
-$url = 'https://demo-api.ig.com/gateway/deal/session';
-subtest q{head_from_post} => sub {
+$url = 'http://api.metacpan.org/v0/author/NICZERO';
+subtest q{head_from_get} => sub {
   my $head;
-  ok $head = $ua->head_from_post($url, {
-    'Content-Type' => 'application/json;charset=UTF-8',
-    Accept => 'application/json;charset=UTF-8',
-    'X-IG-API-KEY' => '5FA056D2706634F2B7C6FC66FE17517B',
-    Version => 2
-  }, json => {
-    identifier => 'A12345',
-    password => '112233'
+  ok $head = $ua->head_from_get($url, {
+    'Content-Type' => 'application/json; charset=UTF-8',
+    Accept => 'application/json; charset=UTF-8'
   }), 'got something';
-  ok $head->cache_control, 'got value';
-  is $head->cache_control, 'no-cache, no-store', 'expected value';
+  ok $head->server, 'got value';
+  like $head->server, qr/^nginx/, 'expected value'
+    or diag dumper $head;
 };
 
 done_testing();

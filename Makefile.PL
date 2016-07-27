@@ -1,4 +1,4 @@
-use 5.010001;
+use 5.014;
 use strict;
 use warnings;
 
@@ -11,19 +11,19 @@ WriteMakefile(
   AUTHOR       => 'Nic Sandfield <niczero@cpan.org>',
   LICENSE      => 'artistic_2',
   META_MERGE   => {
-    requires  => {perl => 5.010001},
+    requires  => {perl => 5.014},
     resources => {
+      bugtracker  => 'https://github.com/niczero/mojo-cachinguseragent/issues',
       license     => 'http://www.opensource.org/licenses/artistic-license-2.0',
-      repository  => 'http://github.com/niczero/mojo-cachinguseragent',
-      bugtracker  => 'http://github.com/niczero/mojo-cachinguseragent/issues'
+      repository  => 'https://github.com/niczero/mojo-cachinguseragent'
     },
     no_index => {directory => [qw(data test)]}
   },
   BUILD_REQUIRES => {'Test::More' => 0},
   CONFIGURE_REQUIRES => {'ExtUtils::MakeMaker' => 6.3},
   PREREQ_PM => {
-    Mojolicious => 5.8
+    'IO::Socket::SSL' => 1.94,
+    Mojolicious       => 5.8
   },
-  EXE_FILES => [],
   test => {TESTS => 'test/*.t'}
 );
