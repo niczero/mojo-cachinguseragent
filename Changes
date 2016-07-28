@@ -1,3 +1,8 @@
+0.061 2016-07-28
+  - Provide transaction when async and not cached.
+  - Provide (redirected final) URL when chaining.
+  - Cache only from 200s.
+
 0.051 2016-07-27
   - Change storage of 'name' attribute.
   - Make blocking blocking (by removing use of delay).

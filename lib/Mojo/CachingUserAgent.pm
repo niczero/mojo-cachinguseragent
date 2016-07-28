@@ -1,8 +1,8 @@
 package Mojo::CachingUserAgent;
-use Mojo::Base 'Mojo::UserAgent';
+use Mojo::UserAgent -base;
 use 5.014;
 
-our $VERSION = 0.051;
+our $VERSION = 0.061;
 
 use Carp 'croak';
 use File::Spec::Functions 'catfile';
@@ -129,7 +129,7 @@ sub head_from_post { shift->head_from('POST', @_) }
 sub head_from_head { shift->head_from('HEAD', @_) }
 
 sub body_from {
-  my ($self, $method, $url) = (shift, shift, shift);
+  my ($self, $method, $url) = (shift, uc(shift), shift);
   my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
   my $headers = (ref $_[0] eq 'HASH') ? shift : {};
 
@@ -147,11 +147,10 @@ sub body_from {
   }
   # Not using cache => fetch
 
-  $headers->{Referer} = $self->referer
-    if not exists $headers->{Referer} and $self->referer;
+  $headers->{Referer} ||= ''. $self->referer if $self->referer;
 
-  $log->debug("Fetching $url");
-  my $tx = $self->build_tx(uc($method), $url, $headers, @_);
+  $log->debug("Requesting $method $url");
+  my $tx = $self->build_tx($method, $url, $headers, @_);
 
   # blocking
   unless ($cb) {
@@ -159,8 +158,8 @@ sub body_from {
     return undef if $self->_handle_error($tx, $url);
     my $body = $tx->res->body;
 
-    spurt encode('UTF-8', $body) => $cache if $cache;
-    $self->referer($url) if $self->chain_referer;
+    spurt encode('UTF-8', $body) => $cache if $cache and $tx->res->code == 200;
+    $self->referer($tx->req->url) if $self->chain_referer;
     return $body;
   }
 
@@ -170,11 +169,12 @@ sub body_from {
     my ($error, $body);
     unless ($error = $self->_handle_error($tx_, $url)) {
       $body = $tx_->res->body;
-      spurt encode('UTF-8', $body) => $cache if $cache;
-      $self->referer($url) if $self->chain_referer;
+      spurt encode('UTF-8', $body) => $cache
+        if $cache and $tx_->res->code == 200;
+      $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $body) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $body, $tx_) });
   });
   return undef;
 }
@@ -198,10 +198,9 @@ sub head_from {
   }
   # Not using cache => fetch
 
-  $headers->{Referer} = $self->referer
-    if not exists $headers->{Referer} and $self->referer;
+  $headers->{Referer} ||= ''. $self->referer if $self->referer;
 
-  $log->debug("Fetching head $url");
+  $log->debug("Requesting HEAD $url");
   my $tx = $self->build_tx(uc($method), $url, $headers, @_);
 
   # blocking
@@ -211,8 +210,9 @@ sub head_from {
     my $head = $tx->res->headers;
     return $head if $error;
 
-    spurt encode('UTF-8', $head->to_string ."\n") => $cache if $cache;
-    $self->referer($url) if $self->chain_referer;
+    spurt encode('UTF-8', $head->to_string ."\n") => $cache
+      if $cache and $tx->res->code == 200;
+    $self->referer($tx->req->url) if $self->chain_referer;
     return $head;
   }
 
@@ -222,11 +222,12 @@ sub head_from {
     my ($error, $head);
     unless ($error = $self->_handle_error($tx_, $url)) {
       $head = $tx_->res->headers;
-      spurt encode('UTF-8', $head->to_string ."\n") => $cache if $cache;
-      $self->referer($url) if $self->chain_referer;
+      spurt encode('UTF-8', $head->to_string ."\n") => $cache
+        if $cache and $tx_->res->code == 200;
+      $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $head) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $head, $tx_) });
   });
   return undef;
 }
@@ -246,13 +247,13 @@ sub dom_from {
 
   # non-blocking
   $self->body_from($method, @args, sub {
-    my ($ua, $error, $body) = @_;
+    my ($ua, $error, $body, $tx_) = @_;
     my $dom;
     unless ($error) {
       $dom = Mojo::DOM->new($body);
       $dom = $dom->at($selector) if $selector;
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $dom) });
+    Mojo::IOLoop->next_tick(sub { $ua->$cb($error, $dom, $tx_) });
   });
   return undef;
 }
@@ -272,13 +273,13 @@ sub json_from {
 
   # non-blocking
   $self->body_from($method, @args, sub {
-    my ($ua, $error, $body) = @_;
+    my ($ua, $error, $body, $tx_) = @_;
     my $json;
     unless ($error) {
       $json = decode_json($body);
       $json = Mojo::JSON::Pointer->new($json)->get($pointer) if $pointer;
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $json) });
+    Mojo::IOLoop->next_tick(sub { $ua->$cb($error, $json, $tx_) });
   });
   return undef;
 }
@@ -296,6 +297,7 @@ sub _handle_error {
 
 #TODO: Extend 'get'
 #TODO: Only cache 'GET'
+#TODO: Extract cookie funcs to separate module
 
 1;
 __END__

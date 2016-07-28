@@ -52,7 +52,7 @@ subtest q{dom_from_get} => sub {
   }
   else {
     ok $dom = $ua->dom_from_get($url, 'geonames status'), 'got error value';
-    like $dom->{message}, qr/^the hourly limit /, 'expected value';
+    like $dom->{message}, qr/^the (?:daily|hourly) limit /, 'expected value';
   }
 };
 
