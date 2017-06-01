@@ -1,9 +1,9 @@
 package Mojo::CachingUserAgent;
 use Mojo::UserAgent -base;
+
+our $VERSION = 0.201;
+
 use 5.014;  # For MIME::Base64::encode_base64url
-
-our $VERSION = 0.101;
-
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
 use Mojo::Cookie::File;
@@ -11,7 +11,8 @@ use Mojo::IOLoop;
 use Mojo::JSON 'decode_json';
 use Mojo::JSON::Pointer;
 use Mojo::Log;
-use Mojo::Util qw(decode encode slurp spurt);
+use Mojo::Util qw(decode encode);
+use Mojo::File 'path';
 
 # Attributes
 
@@ -70,7 +71,7 @@ sub body_from {
   if ($cache and -f $cache) {
     # Use cache
     $log->debug("Using cached $url");
-    my $body = decode 'UTF-8', slurp $cache;
+    my $body = decode 'UTF-8', path($cache)->slurp;
     return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $body) })
         : $body;
   }
@@ -87,9 +88,9 @@ sub body_from {
     return undef if $self->_handle_error($tx, $url);
     my $body = $tx->res->body;
 
-    spurt encode('UTF-8', $body) => $cache if $cache and $tx->res->code == 200;
+    path($cache)->spurt($body) if $cache and $tx->res->code == 200;
     $self->referer($tx->req->url) if $self->chain_referer;
-    return $body;
+    return decode 'UTF-8', $body;
   }
 
   # non-blocking
@@ -98,12 +99,12 @@ sub body_from {
     my ($error, $body);
     unless ($error = $self->_handle_error($tx_, $url)) {
       $body = $tx_->res->body;
-      spurt encode('UTF-8', $body) => $cache
+      path($cache)->spurt($body)
         if $cache and $tx_->res->code == 200;
       $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $body, $tx_) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, decode('UTF-8', $body), $tx_) });
   });
   return undef;
 }
@@ -121,7 +122,7 @@ sub head_from {
   if ($cache and -f $cache) {
     # Use cache
     $log->debug("Using cached $url");
-    my $head = Mojo::Headers->new->parse(decode 'UTF-8', slurp $cache);
+    my $head = Mojo::Headers->new->parse(decode 'UTF-8', path($cache)->slurp);
     return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $head) })
         : $head;
   }
@@ -139,10 +140,10 @@ sub head_from {
     my $head = $tx->res->headers;
     return $head if $error;
 
-    spurt encode('UTF-8', $head->to_string ."\n") => $cache
+    path($cache)->spurt($head->to_string ."\n")
       if $cache and $tx->res->code == 200;
     $self->referer($tx->req->url) if $self->chain_referer;
-    return $head;
+    return decode 'UTF-8', $head;
   }
 
   # non-blocking
@@ -151,12 +152,12 @@ sub head_from {
     my ($error, $head);
     unless ($error = $self->_handle_error($tx_, $url)) {
       $head = $tx_->res->headers;
-      spurt encode('UTF-8', $head->to_string ."\n") => $cache
+      path($cache)->spurt($head->to_string ."\n")
         if $cache and $tx_->res->code == 200;
       $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $head, $tx_) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, decode('UTF-8', $head), $tx_) });
   });
   return undef;
 }

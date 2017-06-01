@@ -23,7 +23,7 @@ WriteMakefile(
   CONFIGURE_REQUIRES => {'ExtUtils::MakeMaker' => 6.3},
   PREREQ_PM => {
     'IO::Socket::SSL' => 1.94,
-    Mojolicious       => 5.8
+    Mojolicious       => 7.15
   },
   test => {TESTS => 'test/*.t'}
 );
