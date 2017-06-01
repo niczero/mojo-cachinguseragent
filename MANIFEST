@@ -5,6 +5,7 @@ MANIFEST
 MANIFEST.SKIP
 README.md
 lib/Mojo/CachingUserAgent.pm
+lib/Mojo/Cookie/File.pm
 test/00-load.t
 test/70-httpbin.t
 test/71-apis.t

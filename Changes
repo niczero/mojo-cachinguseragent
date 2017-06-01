@@ -1,3 +1,6 @@
+0.101 2016-08-01
+  - Factor out Mojo::Cookie::File.
+
 0.061 2016-07-28
   - Provide transaction when async and not cached.
   - Provide (redirected final) URL when chaining.

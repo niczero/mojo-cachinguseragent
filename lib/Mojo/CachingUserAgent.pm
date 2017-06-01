@@ -1,19 +1,17 @@
 package Mojo::CachingUserAgent;
 use Mojo::UserAgent -base;
-use 5.014;
+use 5.014;  # For MIME::Base64::encode_base64url
 
-our $VERSION = 0.061;
+our $VERSION = 0.101;
 
-use Carp 'croak';
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
+use Mojo::Cookie::File;
 use Mojo::IOLoop;
 use Mojo::JSON 'decode_json';
 use Mojo::JSON::Pointer;
 use Mojo::Log;
 use Mojo::Util qw(decode encode slurp spurt);
-use POSIX 'strftime';
-use Scalar::Util 'blessed';
 
 # Attributes
 
@@ -38,77 +36,8 @@ sub new {
   my $self = shift->SUPER::new(max_redirects => 3, inactivity_timeout => 30,
       %param);
   $self->name(delete $self->{name}) if exists $self->{name};
-  $self->load_cookies if $self->{cookie_file};
+  $self->load_cookies if $self->{cookie_file} and -r $self->{cookie_file};
   return $self;
-}
-
-sub load_cookies {
-  my ($self, $domain) = @_;
-  croak 'No path from which to load' unless my $file = $self->cookie_file;
-  croak "Cannot read cookie file ($file)" unless -r $file;
-  my $content = decode 'UTF-8', slurp $file;
-  $self->import_cookies(\$content, $domain);
-}
-
-sub save_cookies {
-  my ($self) = @_;
-  croak 'No path to which to save' unless my $file = $self->cookie_file;
-  croak "Cannot write cookie file ($file)" unless -w $file;
-  spurt encode('UTF-8', ${$self->export_cookies($self->cookie_jar->all)})
-      => $file;
-  return $self;
-}
-
-sub import_cookies {
-  my ($self, $content, $domain) = @_;
-  croak 'Missing content ref' unless ref $content;
-  my $jar = $self->cookie_jar;
-  defined($_ = $self->parse_cookie($_)) and $jar->add($_)
-    for $$content =~ /^.*$/mg;
-  return $self;
-}
-
-sub export_cookies {
-  my ($self, $cookies) = @_;
-  my $content = sprintf "# Cookies saved by Mojo::CachingUserAgent, %s\n#\n",
-      strftime '%Y-%m-%d %H:%M', localtime;
-  defined($_ = $self->format_cookie($_)) and $content .= $_ for @$cookies;
-  return \$content;
-}
-
-sub parse_cookie {
-  my ($self, $text) = @_;
-  $text //= '';
-  return undef unless length $text and $text !~ /^#/;
-
-  my ($origin, $all, $path, $secure, $expires, $name, $value) =
-    $text =~ /^(\S+)\s+([A-Z]+)\s+(\S+)\s+([A-Z]+)\s+(\d+)\s+(\S+)\s+(.*)/;
-  croak "Unrecognised cookie line:\n($text)" unless $name;
-
-  return Mojo::Cookie::Response->new(
-    domain => ($origin //= '') =~ s/^\.//r,
-    origin => $origin,
-    all_machines => $all eq 'TRUE',
-    path => $path,
-    secure => $secure eq 'TRUE',
-    expires => $expires,
-    name => $name,
-    value => $value
-  );
-}
-
-sub format_cookie {
-  my ($self, $cookie) = @_;
-  return undef unless blessed $cookie;
-  my $origin = $cookie->origin // $cookie->domain or return "\n";
-  return sprintf "%s\t%s\t%s\t%s\t%u\t%s\t%s\n",
-      $origin,
-      $cookie->{all_machines} // ($origin =~ /^\./) ? 'TRUE' : 'FALSE',
-      $cookie->path // '/',
-      $cookie->secure ? 'TRUE' : 'FALSE',
-      $cookie->expires // 0,
-      $cookie->name,
-      $cookie->value;
 }
 
 sub get_body       { shift->body_from('GET', @_) }  # legacy, deprecated
@@ -284,6 +213,20 @@ sub json_from {
   return undef;
 }
 
+sub load_cookies {
+  my ($self, $domain) = @_;
+  Mojo::Cookie::File->new(jar => $self->cookie_jar, file => $self->cookie_file)
+    ->load($domain);
+  return $self;
+}
+
+sub save_cookies {
+  my ($self) = @_;
+  Mojo::Cookie::File->new(jar => $self->cookie_jar, file => $self->cookie_file)
+    ->save;
+  return $self;
+}
+
 sub _handle_error {
   my ($self, $tx, $url) = @_;
   if (my $err = $tx->error) {
@@ -320,7 +263,7 @@ Mojo::CachingUserAgent - Caching user agent
 
   $agent = Mojo::CachingUserAgent->new(
     cache_dir => '/var/tmp/cache',
-    cookie_file => '/var/tmp/cookies.txt',
+    cookie_file => '/tmp/cookies.txt',
     chain_referer => 1,
     log => $my_log,
     name => 'Scraperbot/1.0 (+http://myspace.com/inquisitor)',
@@ -330,25 +273,26 @@ Mojo::CachingUserAgent - Caching user agent
 
 =head1 DESCRIPTION
 
-A modest extension of L<Mojo::UserAgent> with convenience wrapper methods around
-'GET' and friends.  The extended object makes it easier to (a) set a C<Referer>
-URL, (b) set an agent 'type' name, and (c) cache results.  When using
-C<Referer>, calls can either (a1) use a common Referer or (a2) use the URL of
-the previous invocation.
+An extension of L<Mojo::UserAgent> with convenience wrapper methods around 'GET'
+and friends.  The extended object makes it easier to (a) set a C<Referer> URL,
+(b) set an agent 'brand' name, and (c) cache results.  When using C<Referer>,
+calls can either (a1) use a common Referer or (a2) use the URL of the previous
+invocation.
 
-Note that the L<get|Mojo::UserAgent/get> method itself is left untouched.
+Note that the L<get|Mojo::UserAgent/get> method itself is left untouched and so
+is available to be used as you would expect.
 
 =head1 USAGE
 
 This module is for developers who want either C<body>, C<dom>, C<json>, or
-C<head> from a page, but not a combination; otherwise you are better using the
-parent module L<Mojo::UserAgent>.  If you have a reason for calling the pure
-methods (C<get> et al) or C<build_tx>, you still can, but this module makes no
-change to those calls.
+C<head> from a page, but not a combination (otherwise you are better using the
+parent module L<Mojo::UserAgent>).  If you have a reason for calling the pure
+methods (C<get> et al) or C<build_tx>, you still can because this module makes
+no change to those calls.
 
 This module will happily use its cache (if set) whenever it can.  If you want
 some cached and some not cached, create a separate instance without a
-C<cache_dir> defined.  (Only 'GET' requests use the cache, of course.)
+C<cache_dir> defined.
 
 The usage dictates a boringly simple approach: if caching is enabled and the URL
 is in the cache, return the cached content (head or body).  When checking the
@@ -382,8 +326,7 @@ currently help you respect 'bot' directives.
 Like its big brother, the agent supports asynchronous calls via callbacks.  If
 running multiple concurrent requests via the same agent, be aware that the
 'referer' is global to the agent so using C<chain_referer> could lead to strange
-results.  If you need C<chain_referer> it is usually best to create enough
-agents as your concurrency demands.
+results.  One solution is to use multiple agents in that situation.
 
 =head2 Blocking Requests
 
