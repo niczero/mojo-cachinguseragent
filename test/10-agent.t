@@ -10,9 +10,9 @@ use File::Spec::Functions 'catfile';
 use File::Temp 'tempdir';
 use MIME::Base64 'encode_base64url';
 use Mojo::CachingUserAgent;
+use Mojo::File 'path';
 use Mojo::Log;
 use Mojo::Server::Daemon;
-use Mojo::Util qw(dumper files);
 
 # App
 use Mojolicious::Lite;
@@ -45,7 +45,7 @@ my $url = "http://127.0.0.1:$port/t";
 subtest q{Body} => sub {
   ok my $body = $ua->body_from_get($url), 'got something';
   is $body, 'works!', 'expected content';
-  ok my @files = files($dir), 'dir listing';
+  ok my @files = path($dir)->list, 'dir listing';
   ok my $cache = catfile($ua->cache_dir, encode_base64url('GET'. $url)),
       'cache file';
   ok -f $cache, 'cache file exists';
@@ -144,24 +144,25 @@ subtest q{DOM async} => sub {
 
 $url = "http://127.0.0.1:$port/j";
 subtest q{JSON async} => sub {
-  my $json;
-  $ua->json_from_get($url, sub { $json = $_[2]; $loop->stop });
+  my ($error, $json);
+  $ua->json_from_get($url, sub { ($error, $json) = @_[1,2]; $loop->stop });
   ok !$json, 'no json yet';
   $loop->start;
-  ok $json, 'got a json';
+  ok $json, 'got a json' or diag $error;
   is ref($json), 'HASH', 'hashref';
 
   undef $json;
-  $ua->json_from_get($url, '/b/1', sub { $json = $_[2]; $loop->stop });
+  $ua->json_from_get($url, '/b/1',
+      sub { ($error, $json) = @_[1,2]; $loop->stop });
   ok !$json, 'no json again';
   $loop->start;
-  ok $json, 'got a json via pointer';
+  ok $json, 'got a json via pointer' or diag $error;
   ok !ref($json), 'scalar';
 
   undef $json;
-  $ua->json_from_get($url, '/notthere', sub { $json = $_[2]; $loop->stop });
+  $ua->json_from_get($url, '/not_there', sub { $json = $_[2]; $loop->stop });
   $loop->start;
-  is $json, undef, 'missing sub-json';
+  ok ! $json, 'missing sub-json';
 };
 
 done_testing();

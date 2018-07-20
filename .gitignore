@@ -3,7 +3,7 @@
 .session
 blib/
 data/
-dep/
+local/
 Makefile
 MYMETA.*
 pm_to_blib

@@ -7,8 +7,12 @@ README.md
 lib/Mojo/CachingUserAgent.pm
 lib/Mojo/Cookie/File.pm
 test/00-load.t
+test/10-agent.t
+test/12-cookies.t
+test/20-utf8.t
 test/70-httpbin.t
 test/71-apis.t
+test/72-cookies.t
 test/manifest.t
 test/pod.t
 test/version.t

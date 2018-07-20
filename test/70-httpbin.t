@@ -5,27 +5,28 @@ use Mojo::Base -strict;
 use Test::More;
 
 use File::Spec::Functions 'catfile';
-use File::Temp 'tempdir';
 use MIME::Base64 'encode_base64url';
 use Mojo::CachingUserAgent;
+use Mojo::File qw(path tempdir);
 use Mojo::Log;
-use Mojo::Util qw(dumper files);
+use Mojo::Util qw(dumper);
 
 plan skip_all => 'set TEST_ONLINE to enable this test' unless $ENV{TEST_ONLINE};
 
-my $dir = tempdir CLEANUP => 1, EXLOCK => 0;
+my $tmpdir = tempdir CLEANUP => 1, EXLOCK => 0, TEMPLATE => 'testXXXXXX';
+
 my $ua = Mojo::CachingUserAgent->new(
-  cache_dir => $dir,
+  cache_dir => "$tmpdir",
   on_error => sub {},
-  log => Mojo::Log->new(path => catfile $dir, 'test.log')
+  log => Mojo::Log->new(path => ''. $tmpdir->child('test.log'))
 );
 my $url = 'http://httpbin.org';
 
 subtest q{Body} => sub {
   my $body;
   ok $body = $ua->body_from_get($url), 'got something';
-  ok $body =~ /\bENDPOINTS\b/, 'expected content';
-  ok my @files = files($dir), 'dir listing';
+  ok $body =~ /\bResponse Service\b/, 'expected content';
+  ok my @files = $tmpdir->list, 'dir listing';
   ok my $cache = catfile($ua->cache_dir, encode_base64url('GET'. $url)),
       'cache file';
   ok -f $cache, 'cache file exists';
@@ -38,7 +39,7 @@ subtest q{DOM} => sub {
   ok $dom = $ua->dom_from_get($url), 'got something';
   my $length = length($dom->to_string);
 
-  ok $dom = $ua->dom_from_get($url, '#AUTHOR'), 'result via selector';
+  ok $dom = $ua->dom_from_get($url, '#swagger-ui'), 'result via selector';
   ok length($dom->to_string) < $length, 'shorter';
 
   is $ua->dom_from_get($url, '#NOTTHERE'), undef, 'missing sub-dom';
@@ -63,7 +64,7 @@ subtest q{Body async} => sub {
   ok !$body, 'no body yet';
   $delay->wait;
   ok $body, 'got a body';
-  ok +($body // '') =~ /\bENDPOINTS\b/, 'expected content';
+  ok +($body // '') =~ /\bResponse Service\b/, 'expected content';
 };
 
 subtest q{DOM async} => sub {
@@ -78,7 +79,7 @@ subtest q{DOM async} => sub {
 
   undef $dom;
   $delay = Mojo::IOLoop->delay(sub {
-    $ua->dom_from_get($url, '#AUTHOR', sub { $dom = $_[2] });
+    $ua->dom_from_get($url, '#swagger-ui', sub { $dom = $_[2] });
   });
   ok !$dom, 'no dom again';
   $delay->wait;

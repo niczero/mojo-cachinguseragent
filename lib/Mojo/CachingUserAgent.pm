@@ -1,22 +1,23 @@
 package Mojo::CachingUserAgent;
 use Mojo::UserAgent -base;
 
-our $VERSION = 0.201;
+our $VERSION = 0.211;
 
 use 5.014;  # For MIME::Base64::encode_base64url
 use File::Spec::Functions 'catfile';
 use MIME::Base64 'encode_base64url';
 use Mojo::Cookie::File;
+use Mojo::File 'path';
 use Mojo::IOLoop;
-use Mojo::JSON 'decode_json';
+use Mojo::JSON 'from_json';
 use Mojo::JSON::Pointer;
 use Mojo::Log;
-use Mojo::Util qw(decode encode);
-use Mojo::File 'path';
+use Mojo::Util qw(decode);
 
 # Attributes
 
-has 'cache_dir';
+has 'cache_dir';  # Default to no caching
+has caching => 'full';  # Only comes into play if cache_dir defined
 has chain_referer => 0;
 has 'cookie_file';
 has log => sub { Mojo::Log->new };
@@ -37,7 +38,7 @@ sub new {
   my $self = shift->SUPER::new(max_redirects => 3, inactivity_timeout => 30,
       %param);
   $self->name(delete $self->{name}) if exists $self->{name};
-  $self->load_cookies if $self->{cookie_file} and -r $self->{cookie_file};
+  $self->load_cookies if $self->{cookie_file} and -r ''. $self->{cookie_file};
   return $self;
 }
 
@@ -59,9 +60,12 @@ sub head_from_post { shift->head_from('POST', @_) }
 sub head_from_head { shift->head_from('HEAD', @_) }
 
 sub body_from {
-  my ($self, $method, $url) = (shift, uc(shift), shift);
+  my ($self, $method, $url) = (shift, shift, shift);
   my $cb = ref $_[-1] eq 'CODE' ? pop : undef;
   my $headers = (ref $_[0] eq 'HASH') ? shift : {};
+
+  my $want_raw;  # whether to provide unencoded content
+  $method = $$method and ++$want_raw if ref $method eq 'SCALAR';
 
   my $cache_dir = $self->cache_dir;
   my $cache = $cache_dir ? catfile $cache_dir, encode_base64url($method . $url)
@@ -71,7 +75,8 @@ sub body_from {
   if ($cache and -f $cache) {
     # Use cache
     $log->debug("Using cached $url");
-    my $body = decode 'UTF-8', path($cache)->slurp;
+    my $body = path($cache)->slurp;
+    $body = decode 'UTF-8', $body unless $want_raw;
     return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $body) })
         : $body;
   }
@@ -90,7 +95,8 @@ sub body_from {
 
     path($cache)->spurt($body) if $cache and $tx->res->code == 200;
     $self->referer($tx->req->url) if $self->chain_referer;
-    return decode 'UTF-8', $body;
+    $body = decode 'UTF-8', $body unless $want_raw;
+    return $body;
   }
 
   # non-blocking
@@ -103,8 +109,9 @@ sub body_from {
         if $cache and $tx_->res->code == 200;
       $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
+      $body = decode 'UTF-8', $body unless $want_raw;
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, decode('UTF-8', $body), $tx_) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $body, $tx_) });
   });
   return undef;
 }
@@ -122,7 +129,7 @@ sub head_from {
   if ($cache and -f $cache) {
     # Use cache
     $log->debug("Using cached $url");
-    my $head = Mojo::Headers->new->parse(decode 'UTF-8', path($cache)->slurp);
+    my $head = Mojo::Headers->new->parse(path($cache)->slurp);
     return $cb ? Mojo::IOLoop->next_tick(sub { $self->$cb(undef, $head) })
         : $head;
   }
@@ -143,7 +150,7 @@ sub head_from {
     path($cache)->spurt($head->to_string ."\n")
       if $cache and $tx->res->code == 200;
     $self->referer($tx->req->url) if $self->chain_referer;
-    return decode 'UTF-8', $head;
+    return $head;
   }
 
   # non-blocking
@@ -157,7 +164,7 @@ sub head_from {
       $self->referer($tx_->req->url) if $self->chain_referer;
       # ^interesting race condition when concurrent
     }
-    Mojo::IOLoop->next_tick(sub { $self->$cb($error, decode('UTF-8', $head), $tx_) });
+    Mojo::IOLoop->next_tick(sub { $self->$cb($error, $head, $tx_) });
   });
   return undef;
 }
@@ -197,7 +204,7 @@ sub json_from {
   # blocking
   unless ($cb) {
     my $body = $self->body_from($method, @args) or return undef;
-    my $json = decode_json($body);
+    my $json = from_json($body);
     return $pointer ? Mojo::JSON::Pointer->new($json)->get($pointer) : $json;
   }
 
@@ -206,8 +213,15 @@ sub json_from {
     my ($ua, $error, $body, $tx_) = @_;
     my $json;
     unless ($error) {
-      $json = decode_json($body);
-      $json = Mojo::JSON::Pointer->new($json)->get($pointer) if $pointer;
+      eval {
+        $json = from_json($body);
+        $json = Mojo::JSON::Pointer->new($json)->get($pointer) if $pointer;
+      }
+      or do {
+        my $error = $@;
+        my $url = eval { $tx_->req->url->to_abs } || 'something';
+        ($error //= '') .= sprintf 'Failed to de-json %s (%s)', $url, $error;
+      };
     }
     Mojo::IOLoop->next_tick(sub { $ua->$cb($error, $json, $tx_) });
   });
@@ -216,8 +230,8 @@ sub json_from {
 
 sub load_cookies {
   my ($self, $domain) = @_;
-  Mojo::Cookie::File->new(jar => $self->cookie_jar, file => $self->cookie_file)
-    ->load($domain);
+  Mojo::Cookie::File->new(jar => $self->cookie_jar)
+    ->load($self->cookie_file, $domain);
   return $self;
 }
 
@@ -239,10 +253,6 @@ sub _handle_error {
   }
 }
 
-#TODO: Extend 'get'
-#TODO: Only cache 'GET'
-#TODO: Extract cookie funcs to separate module
-
 1;
 __END__
 
@@ -263,13 +273,13 @@ Mojo::CachingUserAgent - Caching user agent
   });
 
   $agent = Mojo::CachingUserAgent->new(
+    name => 'Scraperbot/1.0 (+http://myspace.com/inquisitor)',
     cache_dir => '/var/tmp/cache',
     cookie_file => '/tmp/cookies.txt',
-    chain_referer => 1,
     log => $my_log,
-    name => 'Scraperbot/1.0 (+http://myspace.com/inquisitor)',
     referer => 'http://www.example.com/frontpage.html',
-    on_error => sub { die $_[1] }
+    chain_referer => 1,
+    on_error => sub { $_[0]->log->error($_[1]), die $_[1] }
   );
 
 =head1 DESCRIPTION
@@ -280,20 +290,88 @@ and friends.  The extended object makes it easier to (a) set a C<Referer> URL,
 calls can either (a1) use a common Referer or (a2) use the URL of the previous
 invocation.
 
-Note that the L<get|Mojo::UserAgent/get> method itself is left untouched and so
-is available to be used as you would expect.
+Note that the underlying methods (L<get|Mojo::UserAgent/get>, etc) are left
+untouched and therefore are available to be used as you would expect according
+to L<Mojo::UserAgent>.  (Any user agent string that has been set will be
+utilised even for transactions using underlying methods.  On the other hand,
+Referer is ignored when using underlying methods.)
+
+Despite its name, it can be a very useful subclass even if you leave caching
+disabled.
 
 =head1 USAGE
 
-This module is for developers who want either C<body>, C<dom>, C<json>, or
-C<head> from a page, but not a combination (otherwise you are better using the
-parent module L<Mojo::UserAgent>).  If you have a reason for calling the pure
-methods (C<get> et al) or C<build_tx>, you still can because this module makes
-no change to those calls.
+This module is aimed at code that wants either C<body>, C<dom>, C<json>, or
+C<head> from a page, but not a combination for the same page (otherwise you are
+better using the parent module L<Mojo::UserAgent> directly, or at least its
+methods).  If you have a reason for calling the pure methods (C<get> et al) or
+C<build_tx>, you still can because this subclass makes no change to those calls.
 
-This module will happily use its cache (if set) whenever it can.  If you want
-some cached and some not cached, create a separate instance without a
-C<cache_dir> defined.
+The first decision to make is whether to use cache.  There are several options:
+
+=over 4
+
+=item * No cache
+
+This mode caches nothing.  All your transactions are 'online', so you are
+probably using this package because your transactions are simple and you like
+the convenience and readability.  This is the default, so all you do is...
+erm... never define C<cache_dir>.
+
+  Mojo::CachingUserAgent->new(...)  # cache_dir is undefined
+
+=item * Full (dumb) cache
+
+This mode caches absolutely every response, so only makes sense when
+prototyping, and brings the developer two benefits: (a) you avoid upsetting the
+source server while you work out how to navigate a complex DOM, XML, or JSON
+response, and (b) once you have fetched all responses you can go offline and
+continue your development (eg on an underground train or moon shuttle).
+
+All you do is assign a (writeable) filesystem path via C<cache_dir> (and leave
+C<caching> at its default level of 2).  If you are using this as a substitute
+cache till you implement a real one, you could have an approximation to page
+expiry, eg via cron or L<Minion>.
+
+  Mojo::CachingUserAgent->new(cache_dir => ...)  # caching level stays at 2
+
+=item * Partial cache
+
+This is marked EXPERIMENTAL; it remains to be seen whether it results in less
+or more confusion.  It is the option closest to what people will expect when
+they see 'CachingUserAgent', so if nothing else, this option helps highlight why
+full cache (above) is not a real HTTP cache.
+
+This mode caches GET responses that are flagged as cacheable.  You set a
+C<cache_dir> and also set C<caching> to 1 (instead of its default level, 2).  In
+this mode the cache is only used for {body,dom,json}_from_get and only for those
+responses not flagged in their headers as 'no-store'.  (The content for all
+foo_from_bar methods is still stored, allowing you to examine structures and
+perhaps switch C<caching> to level 2 later and go offline.  For these
+transactions it is acting like a log and not like a cache for content reuse.)
+
+  Mojo::CachingUserAgent->new(caching => 1, cache_dir => ...)
+
+You still need to take care of expiry yourself, and there is (currently) not any
+support for max-age, no-cache, nor ETag.
+
+=item * On-off
+
+Whatever level C<caching> is set to, you can override it per-request.  This lets
+you deviate from your chosen mode either temporarily or for particular requests.
+For example, select the 'No cache' option, but override to cache one response
+that you need to debug.  Or for example, select the 'Full cache' option, but
+override to exclude authentication transactions.
+
+=item * Separate agents
+
+Sometimes there is a clear separation between what you want to reuse and what
+must be fetched 'live', and if the flows are separate then the simplest option
+could be to use separate agents.  Take care if they are sharing a cookie file;
+there is no support (currently) for checking whether something else has updated
+the file.
+
+=back
 
 The usage dictates a boringly simple approach: if caching is enabled and the URL
 is in the cache, return the cached content (head or body).  When checking the
@@ -477,7 +555,44 @@ retrieving nothing, most likely due to a pointer not matching anything.
 
 =head2 load_cookies
 
+  $ua->load_cookies
+  $ua->load_cookies(qr/google/)
+  $ua->load_cookies('google.com')
+
+Load cookies from the configured cookie file.  Optionally provide a pattern for
+filtering against the cookie domain.
+
 =head2 save_cookies
+
+  $ua->save_cookies
+
+Save cookies to the configured cookie file, replacing the previous content.
+
+=head1 CAVEATS
+
+The caching functionality makes little sense in a production tier.  (Without
+caching it provides useful simplicity to any tier.)
+
+There is nothing built-in to prevent you filling up your disk space.
+
+There is no handling of max-age, no-cache, nor ETag.
+
+Take care if relying on Referer chaining or shared cookie file for concurrent
+requests.
+
+If caching is used, the contents are stored clear text.  (Perhaps a future
+release will support pluggable serialisation, but the priority is helping
+developers, not performance.)
+
+There is currently no consideration given to people subclassing this subclass;
+that will improve.
+
+=head1 COPYRIGHT AND LICENCE
+
+Copyright (C) 2014--2020, Nic Sandfield.
+
+This program is free software, you can redistribute it and/or modify it under
+the terms of the Artistic License version 2.0.
 
 =head1 SEE ALSO
 
